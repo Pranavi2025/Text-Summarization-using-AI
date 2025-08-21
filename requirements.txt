@@ -1,0 +1,20 @@
+# --- Core Frameworks ---
+fastapi
+uvicorn[standard]
+streamlit
+
+# --- Authentication & Security ---
+python-jose[cryptography]
+passlib[bcrypt]
+
+# --- AI / NLP ---
+transformers
+torch
+sentencepiece
+nltk
+
+# --- APIs & Utilities ---
+googletrans==4.0.0rc1
+pydantic
+httpx
+python-dotenv
