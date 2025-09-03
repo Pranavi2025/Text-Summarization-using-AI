@@ -1,4 +1,3 @@
-
 import streamlit as st
 import sqlite3
 import re
@@ -33,22 +32,6 @@ import base64
 import sqlite3
 import textstat
 
-def add_models_table():
-    """Adds the models table to the database if it doesn't exist."""
-    conn = sqlite3.connect("users.db")
-    cur = conn.cursor()
-    # Corrected the column name from 'is_active' to 'status' and changed the data type
-    cur.execute("""CREATE TABLE IF NOT EXISTS models (
-                  model_id TEXT PRIMARY KEY,
-                  display_name TEXT,
-                  remarks TEXT,
-                  status TEXT DEFAULT 'active',
-                  task_type TEXT NOT NULL DEFAULT 'summarization')""") # Added task_type
-    conn.commit()
-    conn.close()
-
-add_models_table()
-print("Checked/Created 'models' table in users.db")
 
 # -----------------------------------------------
 # HUGGING FACE - AI Model Loading and Functions
@@ -56,9 +39,13 @@ print("Checked/Created 'models' table in users.db")
 device = 0 if torch.cuda.is_available() else -1
 
 
+# OPTIMIZATION: Cache the model loading functions. This is the single biggest performance improvement.
+# The model will now be loaded only ONCE and reused across reruns.
+@st.cache_resource
 def load_summarizer(model_id="google/pegasus-cnn_dailymail"):
     """Loads the summarization model and tokenizer from Hugging Face."""
     try:
+        st.info(f"Loading summarization model: {model_id}. This might take a moment...")
         summarizer_pipeline = pipeline("summarization", model=model_id, device=device)
         tokenizer = summarizer_pipeline.tokenizer
         return summarizer_pipeline, tokenizer
@@ -66,10 +53,12 @@ def load_summarizer(model_id="google/pegasus-cnn_dailymail"):
         st.error(f"Failed to load summarization model {model_id}: {e}")
         return None, None
 
-
+# OPTIMIZATION: Cache the model loading.
+@st.cache_resource
 def load_paraphraser(model_id="humarin/chatgpt_paraphraser_on_T5_base"):
     """Loads the paraphrasing model and tokenizer from Hugging Face."""
     try:
+        st.info(f"Loading paraphrasing model: {model_id}. This might take a moment...")
         paraphraser_pipeline = pipeline("text2text-generation", model=model_id, device=device)
         tokenizer = paraphraser_pipeline.tokenizer
         return paraphraser_pipeline, tokenizer
@@ -77,20 +66,24 @@ def load_paraphraser(model_id="humarin/chatgpt_paraphraser_on_T5_base"):
         st.error(f"Failed to load paraphrasing model {model_id}: {e}")
         return None, None
 
-
+# OPTIMIZATION: Cache the model loading.
+@st.cache_resource
 def load_qa_model(model_id="distilbert-base-cased-distilled-squad"):
     """Loads a Question Answering model."""
     try:
+        st.info(f"Loading Q&A model: {model_id}. This might take a moment...")
         qa_pipeline = pipeline("question-answering", model=model_id, device=device)
         return qa_pipeline
     except Exception as e:
         st.error(f"Failed to load Q&A model {model_id}: {e}")
         return None
 
-
+# OPTIMIZATION: Cache the model loading.
+@st.cache_resource
 def load_text_generation_model(model_id="gpt2"):
     """Loads a Text Generation model."""
     try:
+        st.info(f"Loading Text Generation model: {model_id}. This might take a moment...")
         text_gen_pipeline = pipeline("text-generation", model=model_id, device=device)
         return text_gen_pipeline
     except Exception as e:
@@ -303,6 +296,7 @@ def extract_text_from_docx(file):
 # DATABASE AND USER MANAGEMENT
 # -----------------------------------------------
 
+# REFINEMENT: Consolidate all table creation into a single function for cleaner startup.
 def init_db():
     conn = sqlite3.connect("users.db")
     cur = conn.cursor()
@@ -330,6 +324,7 @@ def init_db():
                      smog_index REAL,
                      FOREIGN KEY(username) REFERENCES users(username))""")
 
+    # 'models' table creation is now part of the main init function.
     cur.execute("""CREATE TABLE IF NOT EXISTS models (
                      model_id TEXT PRIMARY KEY,
                      display_name TEXT,
@@ -338,10 +333,12 @@ def init_db():
                      task_type TEXT NOT NULL DEFAULT 'summarization')""")
     conn.commit()
     conn.close()
+    print("Checked/Created all necessary tables in users.db")
 
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
+# Initialize database schema
 init_db()
 
 # Insert a test user and default models
@@ -353,19 +350,21 @@ def insert_initial_data():
     cur.execute("SELECT * FROM users WHERE username=?", ("test",))
     if not cur.fetchone():
         cur.execute("INSERT INTO users (username, name, email, age_category, language, password, theme, default_model) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    ("test", "Test User", "test@test.com", "15 - 20", "English", hash_password("test"), "light", "google/pegasus-cnn_dailymail")) # Set a default model
+                    ("test", "Test User", "test@test.com", "15 - 20", "English", hash_password("test"), "light", "google/pegasus-cnn_dailymail"))
         conn.commit()
 
     # Insert default models if not exist
     default_models = [
-        ("google/pegasus-cnn_dailymail", "Pegasus CNN/DailyMail (Summarization)", "Good for news articles"),
-        ("humarin/chatgpt_paraphraser_on_T5_base", "ChatGPT Paraphraser (Paraphrasing)", "Effective for rephrasing text"),
+        ("google/pegasus-cnn_dailymail", "Pegasus CNN/DailyMail (Summarization)", "Good for news articles", "summarization"),
+        ("humarin/chatgpt_paraphraser_on_T5_base", "ChatGPT Paraphraser (Paraphrasing)", "Effective for rephrasing text", "paraphrasing"),
+        ("distilbert-base-cased-distilled-squad", "DistilBERT (Q&A)", "Fast and accurate for question answering", "question_answering"),
+        ("gpt2", "GPT-2 (Text Generation)", "Generates creative and coherent text", "text_generation"),
     ]
-    for model_id, display_name, remarks in default_models:
+    for model_id, display_name, remarks, task_type in default_models:
         cur.execute("SELECT * FROM models WHERE model_id=?", (model_id,))
         if not cur.fetchone():
-            cur.execute("INSERT INTO models (model_id, display_name, remarks, status) VALUES (?, ?, ?, ?)",
-                        (model_id, display_name, remarks, 'active'))
+            cur.execute("INSERT INTO models (model_id, display_name, remarks, status, task_type) VALUES (?, ?, ?, ?, ?)",
+                        (model_id, display_name, remarks, 'active', task_type))
             conn.commit()
 
     conn.close()
@@ -512,6 +511,8 @@ def delete_model(model_id):
 # UI ENHANCEMENTS
 # -----------------------------------------------
 
+# OPTIMIZATION: Cache the Lottie file loading to prevent re-downloading.
+@st.cache_data
 def load_lottieurl(url):
     try:
         r = requests.get(url)
@@ -793,6 +794,7 @@ def animate_transition():
 # -----------------------------------------------
 st.set_page_config(page_title="TextMorph App", layout="wide", page_icon="📝")
 
+# REFINEMENT: Centralize all session state initializations here for clarity and better management.
 if "page" not in st.session_state:
     st.session_state.page = "login"
 if "user" not in st.session_state:
@@ -805,18 +807,24 @@ if "generated_summary" not in st.session_state:
     st.session_state.generated_summary = ""
 if "generated_paraphrases" not in st.session_state:
     st.session_state.generated_paraphrases = []
-if "current_summary_model_id" not in st.session_state: # Changed to store model ID
+if "current_summary_model_id" not in st.session_state:
     st.session_state.current_summary_model_id = None
-if "current_paraphrase_model_id" not in st.session_state: # Changed to store model ID
+if "current_paraphrase_model_id" not in st.session_state:
     st.session_state.current_paraphrase_model_id = None
-if "summarizer_pipeline" not in st.session_state: # Store loaded pipeline
+if "summarizer_pipeline" not in st.session_state:
     st.session_state.summarizer_pipeline = None
-if "summarizer_tokenizer" not in st.session_state: # Store loaded tokenizer
+if "summarizer_tokenizer" not in st.session_state:
     st.session_state.summarizer_tokenizer = None
-if "paraphraser_pipeline" not in st.session_state: # Store loaded pipeline
+if "paraphraser_pipeline" not in st.session_state:
     st.session_state.paraphraser_pipeline = None
-if "paraphraser_tokenizer" not in st.session_state: # Store loaded tokenizer
+if "paraphraser_tokenizer" not in st.session_state:
     st.session_state.paraphraser_tokenizer = None
+if "readability_scores" not in st.session_state:
+    st.session_state.readability_scores = None
+if "manual_text" not in st.session_state:
+    st.session_state.manual_text = ""
+if "qa_question" not in st.session_state:
+    st.session_state.qa_question = ""
 
 
 if st.session_state.user:
@@ -848,6 +856,8 @@ if st.session_state.page == "login":
         password = st.text_input("Password", type="password", help="Enter your password", label_visibility="collapsed", placeholder="Password")
 
         if st.button("Login", key="login_btn", use_container_width=True, type="primary"):
+            # IMPORTANT SECURITY NOTE: Hardcoded admin credentials are not recommended for production.
+            # Consider using a 'role' column in the database instead.
             if (username == "shashi" and password == "26092004") or (username == "pranavi" and password == "20112003"):
                 st.session_state.user = username
                 st.session_state.page = "admin"
@@ -962,22 +972,20 @@ elif st.session_state.page == "register":
 
         st.markdown('</div>', unsafe_allow_html=True)
 
-st.set_page_config(page_title="Home", layout="wide")
-
-if "submitted" not in st.session_state:
-    st.session_state.submitted = False
-if "ai_output" not in st.session_state:
-    st.session_state.ai_output = ""
-if "__latest_source_text" not in st.session_state:
-    st.session_state.__latest_source_text = ""
 # ---------- Home Page (AI Tasks + Readability Analysis) ----------
 elif st.session_state.page == "home":
     custom_header()
 
-    # ---------- Session State ----------
-    st.session_state.setdefault("readability_scores", None)
-    st.session_state.setdefault("manual_text", "")
-    st.session_state.setdefault("qa_question", "")
+    # The home page layout and logic remains the same. The performance gain comes from the cached functions.
+    st.set_page_config(page_title="Home", layout="wide")
+
+    if "submitted" not in st.session_state:
+        st.session_state.submitted = False
+    if "ai_output" not in st.session_state:
+        st.session_state.ai_output = ""
+    if "__latest_source_text" not in st.session_state:
+        st.session_state.__latest_source_text = ""
+
     theme = st.session_state.get("theme", "dark")
 
     # ---------- CSS ----------
@@ -1061,9 +1069,10 @@ elif st.session_state.page == "home":
                     help="Pick the model you want to run on your text"
                 )
             with colB:
-                selected_model_id = model_options[selected_display_name]['id']
-                selected_task_type = model_options[selected_display_name]['task']
-                st.info(f"**Task Type:** {selected_task_type.replace('_', ' ').title()}")
+                if selected_display_name:
+                    selected_model_id = model_options[selected_display_name]['id']
+                    selected_task_type = model_options[selected_display_name]['task']
+                    st.info(f"**Task Type:** {selected_task_type.replace('_', ' ').title()}")
 
         else:
             st.warning("No active models available. Please contact an administrator.")
@@ -1146,7 +1155,7 @@ elif st.session_state.page == "home":
                 st.session_state.qa_question = ""
                 st.session_state.readability_scores = None
                 st.toast("Cleared inputs.")
-                st.stop()
+                st.rerun()
 
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -1163,21 +1172,25 @@ elif st.session_state.page == "home":
             if not has_text:
                 st.warning("Please provide the required text input(s).")
             else:
-                with st.status("Running model & analyzing readability…", expanded=False) as status:
+                with st.status("Running model & analyzing readability…", expanded=True) as status:
                     if selected_task_type == "question_answering":
+                        # The call to load_qa_model() will be fast after the first time due to caching.
                         model_pipeline = load_qa_model(selected_model_id)
                         output_result = answer_question(model_pipeline, source_text, st.session_state.qa_question)
                         input_data_for_db = f"Context: {source_text[:500]}...\n\nQuestion: {st.session_state.qa_question}"
                     elif selected_task_type == "summarization":
+                        # Fast after first load.
                         model_pipeline, tokenizer = load_summarizer(selected_model_id)
                         output_result = summarize_text(model_pipeline, tokenizer, source_text)
                         input_data_for_db = source_text
                     elif selected_task_type == "paraphrasing":
+                        # Fast after first load.
                         model_pipeline, tokenizer = load_paraphraser(selected_model_id)
                         paraphrases = paraphrase_text(model_pipeline, tokenizer, source_text)
                         output_result = "\n\n".join([f"Option {i+1}: {p}" for i, p in enumerate(paraphrases)])
                         input_data_for_db = source_text
                     elif selected_task_type == "text_generation":
+                        # Fast after first load.
                         model_pipeline = load_text_generation_model(selected_model_id)
                         output_result = generate_text(model_pipeline, source_text, max_length=150)
                         input_data_for_db = source_text
@@ -1376,9 +1389,10 @@ elif st.session_state.page == "home":
 
                 with viz_tab4:
                     st.markdown("#### Text Statistics")
-                    word_count = len(st.session_state["__latest_source_text"].split())
-                    char_count = len(st.session_state["__latest_source_text"])
-                    sentence_count = st.session_state["__latest_source_text"].count('.') + st.session_state["__latest_source_text"].count('!') + st.session_state["__latest_source_text"].count('?')
+                    source_text_for_stats = st.session_state.get("__latest_source_text", "")
+                    word_count = len(source_text_for_stats.split())
+                    char_count = len(source_text_for_stats)
+                    sentence_count = source_text_for_stats.count('.') + source_text_for_stats.count('!') + source_text_for_stats.count('?')
                     avg_sentence_len = word_count / max(sentence_count, 1)
                     avg_word_len = char_count / max(word_count, 1)
 
@@ -1396,8 +1410,6 @@ elif st.session_state.page == "home":
 
         else:
             st.info("Submit text on the left to see AI output and readability analytics here.")
-
-
 
 # ---------- User Dashboard Page ----------
 elif st.session_state.page == "dashboard":
@@ -1559,7 +1571,7 @@ elif st.session_state.page == "dashboard":
                 csv = df.to_csv(index=False).encode("utf-8")
                 st.download_button("Download Data (CSV)", data=csv, file_name="my_submissions.csv", use_container_width=True)
             with export_cols[1]:
-                pdf_data = export_pdf(df_display)
+                pdf_data = export_pdf(df) # Pass original df to export function
                 st.download_button("Download Data (PDF)", data=pdf_data, file_name="my_submissions.pdf", use_container_width=True)
             st.markdown('</div>', unsafe_allow_html=True)
         else:
@@ -1617,21 +1629,23 @@ elif st.session_state.page == "admin":
             lang_counts = pd.read_sql_query("SELECT language, COUNT(*) as count FROM users GROUP BY language", conn)
             if not lang_counts.empty:
                 fig = px.pie(lang_counts, values="count", names="language", title="User Language Distribution", hole=0.3)
-                fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color="white")
+                fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color="white" if st.session_state.theme == 'dark' else 'black')
                 st.plotly_chart(fig, use_container_width=True)
         with chart_cols[1]:
             age_counts = pd.read_sql_query("SELECT age_category, COUNT(*) as count FROM users GROUP BY age_category", conn)
             if not age_counts.empty:
                 fig = px.bar(age_counts, x="age_category", y="count", title="User Age Distribution")
-                fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color="white")
+                fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color="white" if st.session_state.theme == 'dark' else 'black')
                 st.plotly_chart(fig, use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+        
         # NEW: Model Usage Pie Chart
         st.markdown('<div class="feature-card" style="margin-top: 1rem;">', unsafe_allow_html=True)
         st.markdown('<p class="sub-header">AI Model Usage Distribution</p>', unsafe_allow_html=True)
         model_usage_df = pd.read_sql_query("SELECT model_id_used, COUNT(*) as usage_count FROM submissions GROUP BY model_id_used", conn)
         if not model_usage_df.empty:
             fig = px.pie(model_usage_df, values="usage_count", names="model_id_used", title="Model Popularity", hole=0.3)
-            fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color="white")
+            fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color="white" if st.session_state.theme == 'dark' else 'black')
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No model usage data has been recorded yet.")
